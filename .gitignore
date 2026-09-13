@@ -4,6 +4,11 @@
 sdkconfig
 sdkconfig.old
 
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
 # Python
 __pycache__/
 *.py[cod]
