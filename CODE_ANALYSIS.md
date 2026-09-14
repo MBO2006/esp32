@@ -81,17 +81,16 @@ Y- ←──────────────────────→ YN �
 ## 2. 项目架构总览
 
 ```
-esp32_test/
+esp32/
 ├── platformio.ini          ← 构建配置（引脚、库、编译选项）
-├── CHANGELOG.md            ← 版本记录（可回滚）
 ├── CODE_ANALYSIS.md        ← 本文档
 └── src/
     ├── config.h            ← ① 引脚定义、全局常量
     ├── touch.h             ← ② 触摸驱动接口声明
     ├── touch.cpp           ← ② 触摸驱动实现
-    ├── display.h           ← ③ 显示模块接口声明
-    ├── display.cpp         ← ③ 显示模块实现
-    └── main.cpp            ← ④ 应用主程序
+    ├── display.h           ← ③ 显示模块接口 + Button 结构体
+    ├── display.cpp         ← ③ 显示模块实现（含按钮绘制）
+    └── main.cpp            ← ④ 应用主程序（校准、按钮、绘图）
 ```
 
 ### 模块依赖关系
@@ -100,13 +99,16 @@ esp32_test/
 main.cpp
   ├── config.h      (引脚常量)
   ├── touch.h/cpp   (读触摸)
-  └── display.h/cpp (画屏幕)
+  └── display.h/cpp (画屏幕、按钮)
         └── TFT_eSPI 库 (底层显示驱动)
 
 touch.cpp
-  └── config.h      (引脚常量)
+  ├── config.h      (引脚常量)
+  └── display.h     (仅 include，未直接使用)
 
 display.cpp
+  ├── config.h      (引脚常量)
+  ├── touch.h       (仅 include，未直接使用)
   └── TFT_eSPI 库
 ```
 
@@ -187,6 +189,7 @@ void touchRead(uint16_t &rawX, uint16_t &rawY, uint16_t &z);
 ```cpp
 #include "touch.h"    // 引入自己的接口声明
 #include "config.h"   // 引入引脚定义
+#include "display.h"  // 引入显示模块（当前未直接使用）
 ```
 
 #### 4.2.2 touchWrite() — 发送8位数据
@@ -208,13 +211,6 @@ static void touchWrite(uint8_t data) {
 **逐位发送过程**（以 `data = 0xD0 = 11010000` 为例）：
 
 ```
-循环  i   data >> i   & 1   T_SDI   说明
-──────────────────────────────────────────────
- 1    7   11010000    0     0       发送 bit7 = 1... 等等
-
-让我重新算：
-0xD0 = 1101 0000
-
 data >> 7 = 0000 0001  → & 1 = 1  → T_SDI = 1  (bit7)
 data >> 6 = 0000 0011  → & 1 = 1  → T_SDI = 1  (bit6)
 data >> 5 = 0000 0110  → & 1 = 0  → T_SDI = 0  (bit5)
@@ -372,11 +368,46 @@ build_flags =
 
 **`-D` 的作用**：等价于在代码开头写 `#define`。`-D TFT_MOSI=16` 等于 `#define TFT_MOSI 16`。
 
-### 5.2 display.cpp 逐行解析
+### 5.2 display.h — 接口声明
+
+```cpp
+#pragma once
+#include <Arduino.h>
+#include <TFT_eSPI.h>
+
+// ===== 按钮结构体 =====
+struct Button
+{
+    uint16_t x, y, w, h; // 按钮位置和大小
+    const char *label;   // 按钮标签
+};
+
+// ===== 函数声明 =====
+TFT_eSPI &getTft();                                          // 获取 TFT 对象
+void displayInit();                                           // 初始化显示屏
+void displayTouchInfo(uint16_t rawX, uint16_t rawY, ...);    // 显示触摸信息
+void displayClean();                                          // 清屏并重绘标题
+void drawButton(const Button &btn);                           // 绘制按钮
+bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn); // 判断触摸是否在按钮内
+```
+
+**`struct Button`**：
+```cpp
+struct Button {
+    uint16_t x, y, w, h; // 按钮左上角坐标 + 宽高
+    const char *label;   // 按钮上显示的文字
+};
+```
+结构体把相关的数据打包在一起。一个 `Button` 变量包含了绘制和检测按钮所需的全部信息。
+
+**顺序很重要**：`Button` 结构体必须定义在使用它的函数声明**之前**，否则编译器不认识 `Button` 类型。
+
+### 5.3 display.cpp 逐行解析
 
 ```cpp
 #include "display.h"
 #include "config.h"
+#include "touch.h"
 
 static TFT_eSPI tft = TFT_eSPI();  // 创建 TFT 对象（static = 本文件私有）
 ```
@@ -406,8 +437,8 @@ void displayInit() {
 | 编号 | 名称 | 大小 | 说明 |
 |:---:|:---|:---:|:---|
 | 1 | GLCD | 8×8 | 默认小字体，适合显示数据 |
-| 2 | Font2 | 12×16 | 中等字体，适合标题 |
-| 4 | Font4 | 26px | 大字体，适合按钮文字 |
+| 2 | Font2 | 12×16 | 中等字体，适合标题和按钮 |
+| 4 | Font4 | 26px | 大字体，适合大标题 |
 
 ```cpp
 void displayTouchInfo(uint16_t rawX, uint16_t rawY, uint16_t z, bool touched) {
@@ -430,65 +461,250 @@ void displayTouchInfo(uint16_t rawX, uint16_t rawY, uint16_t z, bool touched) {
 
 **为什么字符串末尾加空格？**`"TOUCHED!"` 有8个字符，`"no touch "` 也有8个字符。如果新字符串比旧字符串短，旧字符会残留在屏幕上。加空格确保覆盖。
 
+### 5.4 displayClean() — 清屏函数
+
+```cpp
+void displayClean()
+{
+    tft.fillScreen(TFT_BLACK);           // 黑色填充整个屏幕
+    tft.setTextFont(1);                  // 恢复小字体
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString("Touch Demo", 5, 5);  // 重绘标题
+}
+```
+
+清屏后重绘标题，保持界面一致。在按钮按下时调用。
+
+### 5.5 drawButton() — 绘制按钮
+
+```cpp
+void drawButton(const Button &btn)
+{
+    tft.drawRect(btn.x, btn.y, btn.w, btn.h, TFT_WHITE);           // 白色边框
+    tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, TFT_BLUE); // 蓝色填充（内缩1像素，保留边框）
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);                          // 白字蓝底
+    tft.setTextFont(2);                                              // 12×16 字体
+    tft.drawString(btn.label, btn.x + 10, btn.y + 8);               // 文字偏移，避免贴边
+}
+```
+
+**`const Button &btn`**：
+- `const`：函数内不修改按钮数据
+- `&`：引用传递，不复制整个结构体，更高效
+
+**按钮绘制层次**：
+```
+┌─────────────────┐ ← drawRect (白色边框)
+│ ┌─────────────┐ │
+│ │   "Clear"   │ │ ← fillRect (蓝色填充，内缩1px)
+│ │             │ │
+│ └─────────────┘ │
+└─────────────────┘
+```
+
+### 5.6 isInButton() — 触摸命中检测
+
+```cpp
+bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn)
+{
+    return (rawX >= btn.x && rawX <= (btn.x + btn.w) &&
+            rawY >= btn.y && rawY <= (btn.y + btn.h));
+}
+```
+
+**矩形碰撞检测**：判断点 (rawX, rawY) 是否在矩形 [x, x+w] × [y, y+h] 内。
+
+```
+        btn.x           btn.x + btn.w
+          │                   │
+          ▼                   ▼
+    ┌─────┬─────────────────┬─────┐
+    │     │                 │     │  ← btn.y
+    │     │    按钮区域      │     │
+    │     │                 │     │
+    │     │  (rawX,rawY) ●  │     │
+    │     │                 │     │
+    └─────┴─────────────────┴─────┘  ← btn.y + btn.h
+
+    触摸点在区域内 → 返回 true
+```
+
 ---
 
 ## 6. main.cpp — 应用主程序
+
+### 6.1 头部与全局变量
 
 ```cpp
 #include <Arduino.h>
 #include "config.h"      // 引脚定义
 #include "touch.h"       // 触摸驱动接口
-#include "display.h"     // 显示模块接口
+#include "display.h"     // 显示模块接口（含 Button 结构体）
+
+Button clearBtn = {10, 200, 100, 40, "Clear"}; // 全局按钮：x=10, y=200, w=100, h=40
 ```
 
-模块化后，`main.cpp` 只需要包含接口头文件，不需要知道实现细节。
+**按钮坐标说明**：
+```
+屏幕 240×320（竖屏）
+┌──────────────────────┐
+│                      │
+│   Touch Demo         │
+│   X: 251             │
+│   Y: 224             │
+│   Z: 69              │
+│   TOUCHED!           │
+│                      │
+│                      │
+│  ┌────────────┐      │  ← y=200
+│  │   Clear    │      │  ← h=40
+│  └────────────┘      │  ← y=240
+│                      │
+└──────────────────────┘
+ ↑ x=10    ↑ x=110
+   w=100
+```
 
-### 6.1 setup() — 初始化
+### 6.2 setup() — 初始化
 
 ```cpp
-void setup() {
-    Serial.begin(SERIAL_BAUD);  // 初始化 USB 串口
-    delay(2000);                 // 等待 USB CDC 枚举完成
+void setup()
+{
+    Serial.begin(SERIAL_BAUD);   // 初始化 USB 串口（115200 bps）
+    delay(2000);                  // 等待 USB CDC 枚举完成
+    Serial.println("=== Touch Demo ===");
+    Serial.flush();               // 等待数据发送完毕
 
-    displayInit();               // 初始化显示屏
-    touchInit();                 // 初始化触摸引脚
+    displayInit();                // 初始化 ILI9341 显示屏
+    touchInit();                  // 初始化 XPT2046 触摸引脚
 
     Serial.println("READY");
+    Serial.flush();
+
+    drawButton(clearBtn);         // 在屏幕上绘制 Clear 按钮
 }
 ```
 
 **为什么 `delay(2000)` ？**
 ESP32-S3 使用原生 USB CDC 作为串口。上电后 USB 需要几秒钟完成枚举（和电脑握手）。如果不等，前面的 `Serial.println()` 输出会丢失。
 
-### 6.2 loop() — 主循环
+**`Serial.flush()`**：等待串口发送缓冲区清空。确保调试信息在崩溃前输出。
+
+### 6.3 loop() — 主循环
 
 ```cpp
-void loop() {
+void loop()
+{
     uint16_t rawX, rawY, z;
-    touchRead(rawX, rawY, z);                    // 读取触摸值
+    touchRead(rawX, rawY, z);                    // 读取触摸原始值
 
-    bool touched = (z > TOUCH_Z_THRESHOLD);      // 判断是否触摸
-    displayTouchInfo(rawX, rawY, z, touched);     // 更新屏幕
+    bool touched = (z > TOUCH_Z_THRESHOLD);      // 压力 > 阈值 → 有触摸
+    displayTouchInfo(rawX, rawY, z, touched);     // 在屏幕上显示原始值
 
-    if (touched) {
-        Serial.printf("rawX=%d rawY=%d z=%d\n", rawX, rawY, z);
-        getTft().fillCircle(120, 160, 5, TFT_GREEN);  // 画绿点
+    if (touched)
+    {
+        // 校准映射：原始值 → 屏幕像素
+        uint16_t screenX = map(rawX, 220, 1780, 0, 239);
+        uint16_t screenY = map(rawY, 200, 1830, 0, 319);
+
+        Serial.printf("rawX=%d rawY=%d z=%d  →  screenX=%d screenY=%d\n",
+                       rawX, rawY, z, screenX, screenY);
+        Serial.flush();
+
+        if (isInButton(screenX, screenY, clearBtn))
+        {
+            displayClean();              // 清屏
+            drawButton(clearBtn);        // 重画按钮（清屏会把它也清掉）
+        }
+        else
+        {
+            getTft().fillCircle(screenX, screenY, 3, TFT_GREEN); // 在触摸位置画绿点
+        }
     }
 
     delay(100);  // 每100ms 循环一次
 }
 ```
 
-**`Serial.printf()` 格式化输出**：
-- `%d` = 十进制整数
-- `%x` = 十六进制
-- `%f` = 浮点数
-- `\n` = 换行
+### 6.4 触摸校准详解
 
-**`getTft().fillCircle(120, 160, 5, TFT_GREEN)`**：
-- `getTft()` 获取 TFT 对象
-- `.fillCircle(x, y, r, color)` 画实心圆
-- 在屏幕中心 (120, 160) 画半径5像素的绿色圆
+**问题**：XPT2046 返回的原始值范围是 0~4095，但实际触摸范围远小于此。
+**解决**：通过四角校准获取实际范围，用 `map()` 线性映射。
+
+```
+原始值空间（0~4095）              屏幕空间（240×320）
+┌─────────────────────┐          ┌─────────────────────┐
+│                     │          │ (0,0)       (239,0) │
+│   220         1780  │          │                     │
+│    ┌───────────┐    │          │                     │
+│ 200│  实际触摸  │1830│    →     │                     │
+│    │   区域     │    │          │                     │
+│    └───────────┘    │          │                     │
+│                     │          │ (0,319)    (239,319) │
+└─────────────────────┘          └─────────────────────┘
+
+map(value, fromLow, fromHigh, toLow, toHigh)
+map(rawX, 220,    1780,      0,     239  )  → screenX
+map(rawY, 200,    1830,      0,     319  )  → screenY
+```
+
+**校准数据**（实测四角平均值）：
+
+| 屏幕位置 | rawX | rawY |
+|----------|------|------|
+| 左上 | ~255 | ~215 |
+| 右上 | ~1750 | ~215 |
+| 右下 | ~1765 | ~1820 |
+| 左下 | ~230 | ~1785 |
+
+取安全范围：X → [220, 1780]，Y → [200, 1830]
+
+### 6.5 完整执行流程
+
+```
+上电
+ │
+ ├─ setup()
+ │   ├─ Serial.begin(115200)     初始化串口
+ │   ├─ delay(2000)              等待 USB 就绪
+ │   ├─ displayInit()            初始化屏幕 + 显示标题
+ │   ├─ touchInit()              初始化触摸引脚
+ │   └─ drawButton(clearBtn)     绘制 Clear 按钮
+ │
+ └─ loop() ←── 每100ms重复
+     ├─ touchRead(rawX, rawY, z)  读取触摸
+     ├─ touched = (z > 50)         判断是否触摸
+     ├─ displayTouchInfo(...)      屏幕显示坐标
+     │
+     ├─ if (touched)
+     │   ├─ map → screenX, screenY   校准映射
+     │   ├─ if (在按钮上)
+     │   │   ├─ displayClean()        清屏
+     │   │   └─ drawButton(clearBtn)  重画按钮
+     │   └─ else
+     │       └─ fillCircle(...)       画绿色圆点
+     │
+     └─ delay(100)
+```
+
+### 6.6 Arduino `map()` 函数
+
+```cpp
+long map(long value, long fromLow, long fromHigh, long toLow, long toHigh)
+```
+
+本质是线性插值公式：
+```
+result = (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow) + toLow
+```
+
+例：`map(1000, 220, 1780, 0, 239)`
+```
+= (1000 - 220) * (239 - 0) / (1780 - 220) + 0
+= 780 * 239 / 1560
+= 119
+```
+触摸原始值 1000 对应屏幕 X 坐标 119（屏幕中央）。
 
 ---
 
@@ -514,6 +730,8 @@ build_flags =                            # 编译宏定义
     -D TFT_DC=5
     -D TFT_RST=6
     -D TFT_MISO=15
+    -D TOUCH_CS=7                        # 触摸片选（未使用，保留）
+    -D TOUCH_IRQ=17                      # 触摸中断（未使用，保留）
     -D LOAD_GLCD                         # 加载 Font1 (8×8)
     -D LOAD_FONT2                        # 加载 Font2 (12×16)
     -D LOAD_FONT4                        # 加载 Font4 (26px)
@@ -574,25 +792,46 @@ build_flags =                            # 编译宏定义
 **原因**：ESP32-S3 的 USB 原生 CDC 需要额外配置
 **解决方案**：加 `-D ARDUINO_USB_CDC_ON_BOOT=1`
 
-### 坑7：校准坐标不准
+### 坑7：触摸坐标校准（已解决）
 
 **现象**：触摸位置和显示位置偏差很大
-**原因**：XPT2046 的原始值需要校准映射到屏幕坐标，且触摸轴可能和显示轴交换
-**未解决**：需要四点校准算法，后续实现
+**原因**：XPT2046 的原始值（0~4095）不等于屏幕像素（240×320），需要校准映射
+**解决方案**：
+1. 串口打印四角原始值
+2. 取平均值确定实际范围（X: 220~1780, Y: 200~1830）
+3. 用 `map()` 做线性映射
+
+### 坑8：PlatformIO 迁移后编译失败
+
+**现象**：将 PlatformIO 从 C 盘迁移到 D 盘后，VS Code 扩展报错
+**原因**：`penv`（Python 虚拟环境）里的路径还是指向旧的 C 盘位置
+**解决方案**：
+1. 设置环境变量 `PLATFORMIO_CORE_DIR=D:\PlatformIO`
+2. 删除旧 `penv`，用 `pip install platformio` 重新安装
+3. 在 `.vscode/settings.json` 中配置 `"platformio.customPATH": "E:\\Python\\Scripts"`
 
 ---
 
 ## 9. 扩展学习
 
-### 9.1 下一步改进方向
+### 9.1 已实现的功能
 
-1. **触摸校准**：四点校准算法，自动计算 raw→screen 映射
-2. **手写绘图**：触摸画画，支持清屏和颜色选择
-3. **GUI 组件**：按钮、滑块、菜单
-4. **中断驱动触摸**：用 T_IRQ 引脚触发中断，避免轮询
-5. **双缓冲**：减少屏幕闪烁
+- [x] 触摸读取与串口输出
+- [x] 屏幕显示触摸坐标和状态
+- [x] 触摸绘图（绿色圆点）
+- [x] 触摸坐标校准（四角校准 + map 映射）
+- [x] Clear 按钮（触摸清屏）
 
-### 9.2 推荐学习资源
+### 9.2 下一步改进方向
+
+1. **多页面菜单**：状态机 + 多页面切换
+2. **按钮按下反馈**：按下时变色，松开恢复
+3. **防抖处理**：加时间间隔，避免一次触摸触发多次
+4. **更多按钮**：颜色选择、画笔粗细、撤销等
+5. **中断驱动触摸**：用 T_IRQ 引脚触发中断，避免轮询
+6. **双缓冲**：减少屏幕闪烁
+
+### 9.3 推荐学习资源
 
 - [ILI9341 数据手册](https://www.displayfuture.com/Display/datasheet/controller/ILI9341.pdf) — 命令列表在 Section 8
 - [XPT2046 数据手册](https://www.waveshare.com/w/upload/8/82/Xpt2046.pdf) — SPI 协议在 Section 7
@@ -600,7 +839,7 @@ build_flags =                            # 编译宏定义
 - [TFT_eSPI GitHub](https://github.com/Bodmer/TFT_eSPI) — 配置指南和示例
 - [PlatformIO 文档](https://docs.platformio.org/) — 构建系统配置
 
-### 9.3 关键概念速查
+### 9.4 关键概念速查
 
 | 概念 | 解释 |
 |:---|:---|
@@ -613,3 +852,6 @@ build_flags =                            # 编译宏定义
 | Pull-up | 上拉电阻，把悬空引脚拉到 HIGH |
 | Strapping Pin | 启动模式引脚，上电时的状态决定芯片行为 |
 | USB CDC | USB Communications Device Class，USB 虚拟串口 |
+| map() | Arduino 线性映射函数，将一个范围的值映射到另一个范围 |
+| struct | C/C++ 结构体，将多个相关变量打包成一个类型 |
+| const 引用 | `const T&` — 传引用不复制，且保证函数内不修改数据 |
