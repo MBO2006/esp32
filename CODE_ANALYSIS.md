@@ -10,11 +10,13 @@
 2. [项目架构总览](#2-项目架构总览)
 3. [config.h — 配置中心](#3-configh--配置中心)
 4. [touch.h / touch.cpp — 触摸驱动](#4-touchh--touchcpp--触摸驱动)
-5. [display.h / display.cpp — 显示模块](#5-displayh--displaycpp--显示模块)
-6. [main.cpp — 应用主程序](#6-maincpp--应用主程序)
-7. [platformio.ini — 构建配置](#7-platformioini--构建配置)
-8. [踩坑全记录](#8-踩坑全记录)
-9. [扩展学习](#9-扩展学习)
+5. [chinese_font.h — 中文字库](#5-chinese_fonth--中文字库)
+6. [display.h / display.cpp — 显示模块](#6-displayh--displaycpp--显示模块)
+7. [loop.h / loop.cpp — 主循环与页面逻辑](#7-looph--loopcpp--主循环与页面逻辑)
+8. [main.cpp — 应用主程序](#8-maincpp--应用主程序)
+9. [platformio.ini — 构建配置](#9-platformioini--构建配置)
+10. [踩坑全记录](#10-踩坑全记录)
+11. [扩展学习](#11-扩展学习)
 
 ---
 
@@ -84,35 +86,48 @@ Y- ←──────────────────────→ YN �
 esp32/
 ├── platformio.ini          ← 构建配置（引脚、库、编译选项）
 ├── CODE_ANALYSIS.md        ← 本文档
+├── CHANGELOG.md            ← 版本变更记录
+├── README.md               ← 项目说明与接线教程
+├── tools/
+│   ├── font_converter.py   ← 字体转换脚本（Python，命令行版）
+│   └── font_converter_gui.py ← 字体转换 GUI 工具
 └── src/
     ├── config.h            ← ① 引脚定义、全局常量
     ├── touch.h             ← ② 触摸驱动接口声明
-    ├── touch.cpp           ← ② 触摸驱动实现
-    ├── display.h           ← ③ 显示模块接口 + Button 结构体
-    ├── display.cpp         ← ③ 显示模块实现（含按钮绘制）
-    └── main.cpp            ← ④ 应用主程序（校准、按钮、绘图）
+    ├── touch.cpp           ← ② 触摸驱动实现（bit-bang SPI）
+    ├── chinese_font.h      ← ③ 中文字库（自动生成的位图数据）
+    ├── display.h           ← ④ 显示模块接口 + Button/Page 定义
+    ├── display.cpp         ← ④ 显示模块实现（页面绘制、按钮）
+    ├── loop.h              ← ⑤ 主循环接口
+    ├── loop.cpp            ← ⑤ 主循环实现（触摸检测、页面切换）
+    └── main.cpp            ← ⑥ 应用入口（setup 初始化）
 ```
 
 ### 模块依赖关系
 
 ```
 main.cpp
-  ├── config.h      (引脚常量)
-  ├── touch.h/cpp   (读触摸)
-  └── display.h/cpp (画屏幕、按钮)
-        └── TFT_eSPI 库 (底层显示驱动)
+  ├── config.h        (引脚常量)
+  ├── touch.h/cpp     (初始化触摸)
+  └── display.h/cpp   (初始化屏幕、画首页)
 
-touch.cpp
-  ├── config.h      (引脚常量)
-  └── display.h     (仅 include，未直接使用)
+loop.cpp
+  ├── config.h        (TOUCH_Z_THRESHOLD)
+  ├── touch.h/cpp     (读触摸坐标)
+  └── display.h/cpp   (页面切换、按钮检测)
 
 display.cpp
-  ├── config.h      (引脚常量)
-  ├── touch.h       (仅 include，未直接使用)
-  └── TFT_eSPI 库
+  ├── config.h        (引脚常量)
+  ├── touch.h         (仅 include，未直接使用)
+  ├── chinese_font.h  (中文字模位图)
+  └── TFT_eSPI 库     (底层显示驱动)
+
+touch.cpp
+  ├── config.h        (引脚常量)
+  └── display.h       (仅 include，未直接使用)
 ```
 
-**设计原则**：每个模块只做一件事。改引脚只动 `config.h`，改触摸逻辑只动 `touch.cpp`，改界面只动 `display.cpp`。
+**设计原则**：每个模块只做一件事。改引脚只动 `config.h`，改触摸逻辑只动 `touch.cpp`，改界面只动 `display.cpp`，改页面路由只动 `loop.cpp`。
 
 ---
 
@@ -346,13 +361,84 @@ void touchRead(uint16_t &rawX, uint16_t &rawY, uint16_t &z) {
 }
 ```
 
-这些是封装好的便捷函数，让 `main.cpp` 不需要知道具体的命令字节。
+这些是封装好的便捷函数，让 `loop.cpp` 不需要知道具体的命令字节。
 
 ---
 
-## 5. display.h / display.cpp — 显示模块
+## 5. chinese_font.h — 中文字库
 
-### 5.1 TFT_eSPI 库
+### 5.1 为什么需要自定义字库？
+
+TFT_eSPI 库内置了英文字体（GLCD、Font2、Font4），但**不包含中文字库**。中文字符有几千个，全部内置会占用巨大的 Flash 空间。解决方案是：**只包含项目实际用到的汉字**，用 Python 工具从系统字体中提取。
+
+### 5.2 字库结构
+
+```cpp
+// 自动生成的中文字库 — 请勿手动修改
+// 字体: msyh.ttc, 字号: 24px
+// 字符数: 28
+
+#pragma once
+#include <Arduino.h>
+#include <TFT_eSPI.h>
+
+#define CN_FONT_SIZE 24     // 字号（像素）
+#define CN_CHAR_COUNT 28    // 包含的字符数
+```
+
+每个汉字被转换为一个 `uint16_t` 数组，存在 Flash（PROGMEM）中：
+
+```cpp
+// '佳' (U+4F73) 32x30
+static const uint16_t cn_char_000[] PROGMEM = {
+    0x0000, 0x0000, ...  // 32×30 = 960 个像素的 RGB565 颜色值
+};
+```
+
+**PROGMEM 关键字**：告诉编译器把数据放在 Flash 而不是 RAM 中。ESP32-S3 有 8MB Flash 但只有 512KB RAM，字库数据必须放 Flash。
+
+### 5.3 字模查找表
+
+字库文件末尾有查找表，把 Unicode 码点映射到位图数组：
+
+```cpp
+// 查找表：输入汉字 → 输出位图数组指针和尺寸
+struct CnCharInfo {
+    const uint16_t *data;   // 位图数据指针
+    uint16_t width;          // 字符宽度（像素）
+    uint16_t height;         // 字符高度（像素）
+};
+```
+
+### 5.4 cnDrawString() — 绘制中文字符串
+
+显示模块通过 `cnDrawString()` 函数渲染中文文本：
+
+```cpp
+cnDrawString(&tft, 10, 10, "这是菜单");
+```
+
+**工作流程**：
+1. 遍历字符串中的每个字符
+2. 在查找表中找到对应的位图数据
+3. 用 TFT_eSPI 的 `pushImage()` 逐行绘制位图到屏幕
+
+### 5.5 字体转换工具
+
+项目提供了 Python 工具来生成字库文件：
+
+| 工具 | 说明 |
+|:---|:---|
+| `tools/font_converter.py` | 命令行版：`python font_converter.py --text "你好世界" --output font.h` |
+| `tools/font_converter_gui.py` | GUI 版：带图形界面，可视化选择字体和字号 |
+
+**使用场景**：需要显示新的中文文字时，用工具把新文字追加到字库中，重新编译即可。
+
+---
+
+## 6. display.h / display.cpp — 显示模块
+
+### 6.1 TFT_eSPI 库
 
 TFT_eSPI 是一个开源的 TFT 显示库，支持 ESP32/ESP8266/STM32 等平台。它的核心优势是**通过编译宏配置**，不需要改库源码。
 
@@ -368,7 +454,7 @@ build_flags =
 
 **`-D` 的作用**：等价于在代码开头写 `#define`。`-D TFT_MOSI=16` 等于 `#define TFT_MOSI 16`。
 
-### 5.2 display.h — 接口声明
+### 6.2 display.h — 接口声明
 
 ```cpp
 #pragma once
@@ -376,115 +462,210 @@ build_flags =
 #include <TFT_eSPI.h>
 
 // ===== 按钮结构体 =====
-struct Button
-{
-    uint16_t x, y, w, h; // 按钮位置和大小
-    const char *label;   // 按钮标签
+struct Button {
+    uint16_t x, y, w, h;   // 按钮位置和大小
+    const char *label;      // 按钮标签（支持中文）
 };
 
-// ===== 函数声明 =====
-TFT_eSPI &getTft();                                          // 获取 TFT 对象
-void displayInit();                                           // 初始化显示屏
-void displayTouchInfo(uint16_t rawX, uint16_t rawY, ...);    // 显示触摸信息
-void displayClean();                                          // 清屏并重绘标题
-void drawButton(const Button &btn);                           // 绘制按钮
-bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn); // 判断触摸是否在按钮内
+// ===== 页面枚举 =====
+enum Page {
+    PAGE_HOME,       // 首页（菜单选择）
+    PAGE_FUNCTION,   // 功能页
+    PAGE1,           // 页面1
+    PAGE2,           // 页面2
+    PAGE_COUNT       // 页面总数（哨兵值）
+};
+
+// ===== 按钮声明（定义在 loop.cpp）=====
+extern Button page1;
+extern Button page2;
+extern Button backBtn;
+extern Button functionBtn;
+
+// ===== 显示函数 =====
+TFT_eSPI &getTft();              // 获取 TFT 对象
+void displayInit();              // 初始化显示屏
+void displayTouchInfo(bool touched);  // 显示触摸状态
+Page getCurrentPage();           // 获取当前页面
+
+// ===== 页面绘制 =====
+void drawPageHome();             // 首页
+void drawPageFunction();         // 功能页
+void drawpage1();                // 页面1
+void drawpage2();                // 页面2
+
+// ===== 页面切换 =====
+void switchToHome();             // 切换到首页
+void switchToFunction();         // 切换到功能页
+void gotopage1();                // 切换到页面1
+void gotopage2();                // 切换到页面2
+
+// ===== 按钮操作 =====
+void drawButton(const Button &btn);
+bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn);
 ```
 
 **`struct Button`**：
 ```cpp
 struct Button {
-    uint16_t x, y, w, h; // 按钮左上角坐标 + 宽高
-    const char *label;   // 按钮上显示的文字
+    uint16_t x, y, w, h;  // 按钮左上角坐标 + 宽高
+    const char *label;     // 按钮上显示的文字（支持中文UTF-8）
 };
 ```
 结构体把相关的数据打包在一起。一个 `Button` 变量包含了绘制和检测按钮所需的全部信息。
 
-**顺序很重要**：`Button` 结构体必须定义在使用它的函数声明**之前**，否则编译器不认识 `Button` 类型。
+**`enum Page` 页面枚举**：
+```cpp
+enum Page {
+    PAGE_HOME,      // = 0，首页
+    PAGE_FUNCTION,  // = 1，功能页
+    PAGE1,          // = 2，页面1
+    PAGE2,          // = 3，页面2
+    PAGE_COUNT      // = 4，页面总数（不作为实际页面使用）
+};
+```
+枚举用有意义的名字代替魔法数字，代码更易读。`PAGE_COUNT` 是常见技巧——它自动等于前面成员的数量，可用于数组大小或范围检查。
 
-### 5.3 display.cpp 逐行解析
+**`extern` 关键字**：
+```cpp
+extern Button page1;
+```
+告诉编译器："这个变量在别的 `.cpp` 文件里定义了，我这里只是声明，链接时再去找"。按钮的实际定义在 `loop.cpp` 中。
+
+### 6.3 display.cpp 逐行解析
+
+#### 6.3.1 静态变量
 
 ```cpp
 #include "display.h"
 #include "config.h"
 #include "touch.h"
+#include "chinese_font.h"     // 引入中文字库
 
-static TFT_eSPI tft = TFT_eSPI();  // 创建 TFT 对象（static = 本文件私有）
+static TFT_eSPI tft = TFT_eSPI();    // 创建 TFT 对象（static = 本文件私有）
+static Page currentPage = PAGE_HOME;  // 当前页面状态（默认首页）
 ```
 
 **`static TFT_eSPI tft`**：这个 `tft` 对象只在 `display.cpp` 内可见。外部代码通过 `getTft()` 函数访问它。这叫**封装**——外部不能直接操作 `tft`，只能通过我们提供的接口。
 
+**`static Page currentPage`**：记录当前显示的页面。所有页面切换函数都会更新它。
+
+#### 6.3.2 accessor 函数
+
 ```cpp
-TFT_eSPI& getTft() {
-    return tft;    // 返回引用，外部可以直接调用 tft 的方法
+TFT_eSPI &getTft() {
+    return tft;            // 返回引用，外部可以直接调用 tft 的方法
+}
+
+Page getCurrentPage() {
+    return currentPage;    // 返回当前页面枚举值
 }
 ```
 
 **返回引用 `TFT_eSPI&`**：调用者拿到的是 `tft` 本身，不是副本。这样调用者可以 `getTft().fillCircle(...)` 直接画图。
 
+#### 6.3.3 displayInit() — 初始化显示屏
+
 ```cpp
 void displayInit() {
     tft.init();              // 初始化硬件：配置 SPI3、发送 ILI9341 初始化序列
-    tft.setRotation(0);      // 0=竖屏240×320, 1=横屏320×240
-    tft.fillScreen(TFT_BLACK);  // 全屏填充黑色（清屏）
-    tft.setTextFont(1);      // 使用 Font1（8×8 像素的 Adafruit GLCD 字体）
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);  // 前景白色，背景黑色
-    tft.drawString("Touch Demo", 5, 5);       // 在 (5,5) 位置显示文字
 }
 ```
 
-**`setTextFont(1)` 字体编号**：
-| 编号 | 名称 | 大小 | 说明 |
-|:---:|:---|:---:|:---|
-| 1 | GLCD | 8×8 | 默认小字体，适合显示数据 |
-| 2 | Font2 | 12×16 | 中等字体，适合标题和按钮 |
-| 4 | Font4 | 26px | 大字体，适合大标题 |
+#### 6.3.4 displayTouchInfo() — 显示触摸状态
 
 ```cpp
-void displayTouchInfo(uint16_t rawX, uint16_t rawY, uint16_t z, bool touched) {
-    // 显示原始坐标值（黄色文字）
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("X:" + String(rawX) + "    ", 5, 20);  // "    " 清除旧数字
-    tft.drawString("Y:" + String(rawY) + "    ", 5, 32);
-    tft.drawString("Z:" + String(z) + "    ", 5, 44);
-
-    // 显示触摸状态
+void displayTouchInfo(bool touched)
+{
     if (touched) {
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.drawString("TOUCHED!", 5, 56);
+        tft.drawString("TOUCHED!", 140, 20);
     } else {
         tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.drawString("no touch ", 5, 56);   // 末尾空格覆盖旧文字
+        tft.drawString("no touch ", 140, 20);
     }
 }
 ```
 
-**为什么字符串末尾加空格？**`"TOUCHED!"` 有8个字符，`"no touch "` 也有8个字符。如果新字符串比旧字符串短，旧字符会残留在屏幕上。加空格确保覆盖。
+**为什么字符串末尾加空格？** `"TOUCHED!"` 有8个字符，`"no touch "` 也有8个字符。如果新字符串比旧字符串短，旧字符会残留在屏幕上。加空格确保覆盖。
 
-### 5.4 displayClean() — 清屏函数
+#### 6.3.5 页面绘制函数
 
+每个页面函数负责：清屏 → 画文字 → 画按钮。
+
+**首页 `drawPageHome()`**：
 ```cpp
-void displayClean()
-{
-    tft.fillScreen(TFT_BLACK);           // 黑色填充整个屏幕
-    tft.setTextFont(1);                  // 恢复小字体
+void drawPageHome() {
+    tft.fillScreen(TFT_BLACK);                    // 清屏
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Touch Demo", 5, 5);  // 重绘标题
+    tft.setTextFont(2);                           // Font2 (12×16)
+    cnDrawString(&tft, 10, 10, "这是菜单");        // 中文标题
+    cnDrawString(&tft, 10, 40, "你可以选择页面并点击"); // 中文提示
+    drawButton(page1);                            // 画"页面1"按钮
+    drawButton(page2);                            // 画"页面2"按钮
 }
 ```
 
-清屏后重绘标题，保持界面一致。在按钮按下时调用。
+**页面1 `drawpage1()`**：
+```cpp
+void drawpage1() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.drawString("PAGE1", 10, 10);
+    drawButton(backBtn);          // "返回"按钮
+    drawButton(functionBtn);      // "功能"按钮
+}
+```
 
-### 5.5 drawButton() — 绘制按钮
+**功能页 `drawPageFunction()`**：
+```cpp
+void drawPageFunction() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.drawString("FUNCTION PAGE", 10, 10);
+    cnDrawString(&tft, 10, 40, "佳佳快学习");     // 中文内容
+    cnDrawString(&tft, 10, 80, "琼琼别学了");     // 中文内容
+    drawButton(backBtn);                          // "返回"按钮
+}
+```
+
+#### 6.3.6 页面切换函数
+
+切换函数的模式统一：**更新状态 + 重绘页面**。
 
 ```cpp
-void drawButton(const Button &btn)
-{
-    tft.drawRect(btn.x, btn.y, btn.w, btn.h, TFT_WHITE);           // 白色边框
-    tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, TFT_BLUE); // 蓝色填充（内缩1像素，保留边框）
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);                          // 白字蓝底
-    tft.setTextFont(2);                                              // 12×16 字体
-    tft.drawString(btn.label, btn.x + 10, btn.y + 8);               // 文字偏移，避免贴边
+void switchToHome() {
+    currentPage = PAGE_HOME;   // 更新状态变量
+    drawPageHome();            // 重绘目标页面
+}
+
+void switchToFunction() {
+    currentPage = PAGE_FUNCTION;
+    drawPageFunction();
+}
+
+void gotopage1() {
+    currentPage = PAGE1;
+    drawpage1();
+}
+
+void gotopage2() {
+    currentPage = PAGE2;
+    drawpage2();
+}
+```
+
+#### 6.3.7 drawButton() — 绘制按钮
+
+```cpp
+void drawButton(const Button &btn) {
+    tft.drawRect(btn.x, btn.y, btn.w, btn.h, TFT_BLACK);            // 边框
+    tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, TFT_BLACK); // 填充（内缩1像素）
+    tft.setTextColor(TFT_BLACK, TFT_BLACK);                          // 文字颜色
+    tft.setTextFont(2);                                               // 12×16 字体
+    cnDrawString(&tft, btn.x + 10, btn.y + 8, btn.label);           // 绘制中文标签
 }
 ```
 
@@ -492,21 +673,10 @@ void drawButton(const Button &btn)
 - `const`：函数内不修改按钮数据
 - `&`：引用传递，不复制整个结构体，更高效
 
-**按钮绘制层次**：
-```
-┌─────────────────┐ ← drawRect (白色边框)
-│ ┌─────────────┐ │
-│ │   "Clear"   │ │ ← fillRect (蓝色填充，内缩1px)
-│ │             │ │
-│ └─────────────┘ │
-└─────────────────┘
-```
-
-### 5.6 isInButton() — 触摸命中检测
+#### 6.3.8 isInButton() — 触摸命中检测
 
 ```cpp
-bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn)
-{
+bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn) {
     return (rawX >= btn.x && rawX <= (btn.x + btn.w) &&
             rawY >= btn.y && rawY <= (btn.y + btn.h));
 }
@@ -531,102 +701,145 @@ bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn)
 
 ---
 
-## 6. main.cpp — 应用主程序
+## 7. loop.h / loop.cpp — 主循环与页面逻辑
 
-### 6.1 头部与全局变量
+### 7.1 为什么单独一个模块？
+
+在早期版本中，`loop()` 函数直接写在 `main.cpp` 里。随着页面和按钮数量增加，逻辑越来越复杂，所以拆分为独立模块。这符合**单一职责原则**：
+- `main.cpp` 只负责初始化
+- `loop.cpp` 只负责运行时逻辑（触摸检测、页面路由）
+
+### 7.2 loop.h — 接口
 
 ```cpp
-#include <Arduino.h>
-#include "config.h"      // 引脚定义
-#include "touch.h"       // 触摸驱动接口
-#include "display.h"     // 显示模块接口（含 Button 结构体）
+#pragma once
 
-Button clearBtn = {10, 200, 100, 40, "Clear"}; // 全局按钮：x=10, y=200, w=100, h=40
+void loop();  // 声明自定义的 loop 函数
 ```
 
-**按钮坐标说明**：
+**注意**：Arduino 框架默认提供 `loop()` 函数，但这个项目**用自己的 `loop()` 替代了它**（在 `main.cpp` 的 `setup()` 末尾手动调用）。
+
+### 7.3 loop.cpp — 完整实现
+
+#### 7.3.1 头部与按钮定义
+
+```cpp
+#include "loop.h"
+#include "display.h"
+#include "touch.h"
+#include "config.h"
+
+// 按钮定义（变量名全小写）
+Button page1 = {20, 278, 100, 40, "页面1"};
+Button page2 = {140, 278, 100, 40, "页面2"};
+Button backBtn = {20, 278, 100, 40, "返回"};
+Button functionBtn = {140, 278, 100, 40, "功能"};
 ```
-屏幕 240×320（竖屏）
+
+**按钮坐标说明**（240×320 竖屏）：
+```
+屏幕 240×320
 ┌──────────────────────┐
-│                      │
-│   Touch Demo         │
-│   X: 251             │
-│   Y: 224             │
-│   Z: 69              │
-│   TOUCHED!           │
+│                      │ y=0
+│   这是菜单            │
+│   你可以选择页面并点击 │
 │                      │
 │                      │
-│  ┌────────────┐      │  ← y=200
-│  │   Clear    │      │  ← h=40
-│  └────────────┘      │  ← y=240
 │                      │
+│                      │
+│                      │
+│  ┌────────┐ ┌────────┐│ ← y=278
+│  │  页面1  │ │  页面2  ││ ← h=40
+│  └────────┘ └────────┘│ ← y=318
 └──────────────────────┘
- ↑ x=10    ↑ x=110
-   w=100
+   x=20       x=140
+   w=100      w=100
 ```
 
-### 6.2 setup() — 初始化
+`backBtn` 和 `functionBtn` 在不同的页面中使用，位置可以相同也可以不同。
+
+#### 7.3.2 loop() — 主循环
 
 ```cpp
-void setup()
-{
-    Serial.begin(SERIAL_BAUD);   // 初始化 USB 串口（115200 bps）
-    delay(2000);                  // 等待 USB CDC 枚举完成
-    Serial.println("=== Touch Demo ===");
-    Serial.flush();               // 等待数据发送完毕
-
-    displayInit();                // 初始化 ILI9341 显示屏
-    touchInit();                  // 初始化 XPT2046 触摸引脚
-
-    Serial.println("READY");
-    Serial.flush();
-
-    drawButton(clearBtn);         // 在屏幕上绘制 Clear 按钮
-}
-```
-
-**为什么 `delay(2000)` ？**
-ESP32-S3 使用原生 USB CDC 作为串口。上电后 USB 需要几秒钟完成枚举（和电脑握手）。如果不等，前面的 `Serial.println()` 输出会丢失。
-
-**`Serial.flush()`**：等待串口发送缓冲区清空。确保调试信息在崩溃前输出。
-
-### 6.3 loop() — 主循环
-
-```cpp
-void loop()
-{
+void loop() {
+    // ① 读取触摸
     uint16_t rawX, rawY, z;
-    touchRead(rawX, rawY, z);                    // 读取触摸原始值
+    touchRead(rawX, rawY, z);
 
-    bool touched = (z > TOUCH_Z_THRESHOLD);      // 压力 > 阈值 → 有触摸
-    displayTouchInfo(rawX, rawY, z, touched);     // 在屏幕上显示原始值
+    // ② 判断是否触摸
+    bool touched = (z > TOUCH_Z_THRESHOLD);
+    displayTouchInfo(touched);
 
-    if (touched)
-    {
+    // ③ 如果有触摸
+    if (touched) {
         // 校准映射：原始值 → 屏幕像素
         uint16_t screenX = map(rawX, 220, 1780, 0, 239);
         uint16_t screenY = map(rawY, 200, 1830, 0, 319);
 
+        // 串口调试输出
         Serial.printf("rawX=%d rawY=%d z=%d  →  screenX=%d screenY=%d\n",
-                       rawX, rawY, z, screenX, screenY);
+                      rawX, rawY, z, screenX, screenY);
         Serial.flush();
 
-        if (isInButton(screenX, screenY, clearBtn))
-        {
-            displayClean();              // 清屏
-            drawButton(clearBtn);        // 重画按钮（清屏会把它也清掉）
+        // ④ 获取当前页面，根据页面分发按钮事件
+        Page currentPage = getCurrentPage();
+
+        if (currentPage == PAGE_HOME) {
+            if (isInButton(screenX, screenY, page1)) {
+                gotopage1();           // 首页 → 页面1
+            } else if (isInButton(screenX, screenY, page2)) {
+                gotopage2();           // 首页 → 页面2
+            }
         }
-        else
-        {
-            getTft().fillCircle(screenX, screenY, 3, TFT_GREEN); // 在触摸位置画绿点
+        if (currentPage == PAGE1) {
+            if (isInButton(screenX, screenY, backBtn)) {
+                switchToHome();        // 页面1 → 首页
+            } else if (isInButton(screenX, screenY, functionBtn)) {
+                switchToFunction();    // 页面1 → 功能页
+            }
+        }
+        if (currentPage == PAGE2) {
+            if (isInButton(screenX, screenY, backBtn)) {
+                switchToHome();        // 页面2 → 首页
+            }
+        }
+        if (currentPage == PAGE_FUNCTION) {
+            if (isInButton(screenX, screenY, backBtn)) {
+                gotopage1();           // 功能页 → 页面1
+            }
         }
     }
-
-    delay(100);  // 每100ms 循环一次
+    delay(100);  // 每100ms循环一次
 }
 ```
 
-### 6.4 触摸校准详解
+### 7.4 页面路由图
+
+```
+                  ┌─────────────┐
+                  │  PAGE_HOME  │
+                  │   "这是菜单"  │
+                  └──┬──────┬──┘
+            点"页面1" │      │ 点"页面2"
+                     ▼      ▼
+          ┌──────────┐    ┌──────────┐
+          │  PAGE1   │    │  PAGE2   │
+          │  "PAGE1" │    │  "PAGE2" │
+          └──┬───┬───┘    └────┬─────┘
+             │   │             │
+    点"功能"  │   │ 点"返回"     │ 点"返回"
+             ▼   │             │
+     ┌──────────┐│             │
+     │FUNCTION  ││             │
+     │  PAGE    ││             │
+     └────┬─────┘│             │
+          │      │             │
+  点"返回"│      │             │
+          ▼      ▼             ▼
+         回到 PAGE1     回到 PAGE_HOME
+```
+
+### 7.5 触摸校准详解
 
 **问题**：XPT2046 返回的原始值范围是 0~4095，但实际触摸范围远小于此。
 **解决**：通过四角校准获取实际范围，用 `map()` 线性映射。
@@ -659,35 +872,7 @@ map(rawY, 200,    1830,      0,     319  )  → screenY
 
 取安全范围：X → [220, 1780]，Y → [200, 1830]
 
-### 6.5 完整执行流程
-
-```
-上电
- │
- ├─ setup()
- │   ├─ Serial.begin(115200)     初始化串口
- │   ├─ delay(2000)              等待 USB 就绪
- │   ├─ displayInit()            初始化屏幕 + 显示标题
- │   ├─ touchInit()              初始化触摸引脚
- │   └─ drawButton(clearBtn)     绘制 Clear 按钮
- │
- └─ loop() ←── 每100ms重复
-     ├─ touchRead(rawX, rawY, z)  读取触摸
-     ├─ touched = (z > 50)         判断是否触摸
-     ├─ displayTouchInfo(...)      屏幕显示坐标
-     │
-     ├─ if (touched)
-     │   ├─ map → screenX, screenY   校准映射
-     │   ├─ if (在按钮上)
-     │   │   ├─ displayClean()        清屏
-     │   │   └─ drawButton(clearBtn)  重画按钮
-     │   └─ else
-     │       └─ fillCircle(...)       画绿色圆点
-     │
-     └─ delay(100)
-```
-
-### 6.6 Arduino `map()` 函数
+### 7.6 Arduino `map()` 函数
 
 ```cpp
 long map(long value, long fromLow, long fromHigh, long toLow, long toHigh)
@@ -708,7 +893,67 @@ result = (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow) + toLow
 
 ---
 
-## 7. platformio.ini — 构建配置
+## 8. main.cpp — 应用主程序
+
+```cpp
+/**
+ * main.cpp — 应用主程序
+ *
+ * 功能：读取 XPT2046 触摸值并在 ILI9341 屏幕上显示
+ *
+ * 模块依赖：
+ *   config.h    — 引脚定义
+ *   touch.h/cpp — XPT2046 触摸驱动
+ *   display.h/cpp — 显示辅助函数
+ */
+#include <Arduino.h>
+#include "config.h"
+#include "touch.h"
+#include "display.h"
+
+void setup()
+{
+    Serial.begin(SERIAL_BAUD);   // 初始化 USB 串口（115200 bps）
+    delay(2000);                  // 等待 USB CDC 枚举完成
+    Serial.println("=== Touch Demo ===");
+    Serial.flush();               // 等待数据发送完毕
+
+    displayInit();                // 初始化 ILI9341 显示屏
+    drawPageHome();               // 画首页（含"页面1""页面2"按钮）
+
+    touchInit();                  // 初始化 XPT2046 触摸引脚
+    loop();                      // 进入主循环（检测触摸并处理页面切换）
+
+    Serial.println("READY");     // 实际上 loop() 不会返回，这行不会执行
+    Serial.flush();
+}
+```
+
+**为什么 `delay(2000)` ？**
+ESP32-S3 使用原生 USB CDC 作为串口。上电后 USB 需要几秒钟完成枚举（和电脑握手）。如果不等，前面的 `Serial.println()` 输出会丢失。
+
+**`Serial.flush()`**：等待串口发送缓冲区清空。确保调试信息在崩溃前输出。
+
+**注意**：`main.cpp` 极其精简——它只做初始化，然后调用 `loop()` 进入循环。所有运行时逻辑都在 `loop.cpp` 中。
+
+### 完整执行流程
+
+```
+上电
+ │
+ ├─ setup()
+ │   ├─ Serial.begin(115200)     初始化串口
+ │   ├─ delay(2000)              等待 USB 就绪
+ │   ├─ displayInit()            初始化屏幕
+ │   ├─ drawPageHome()           画首页（标题 + 按钮）
+ │   ├─ touchInit()              初始化触摸引脚
+ │   └─ loop()                   进入主循环 ← 不会返回
+ │       └─ 详见 loop.cpp 解析
+```
+
+---
+
+## 9. platformio.ini — 构建配置
 
 ```ini
 [env:esp32s3]                            # 环境名称
@@ -751,7 +996,7 @@ build_flags =                            # 编译宏定义
 
 ---
 
-## 8. 踩坑全记录
+## 10. 踩坑全记录
 
 ### 坑1：GPIO 11/12/13 黑屏
 
@@ -812,26 +1057,28 @@ build_flags =                            # 编译宏定义
 
 ---
 
-## 9. 扩展学习
+## 11. 扩展学习
 
-### 9.1 已实现的功能
+### 11.1 已实现的功能
 
 - [x] 触摸读取与串口输出
-- [x] 屏幕显示触摸坐标和状态
-- [x] 触摸绘图（绿色圆点）
+- [x] 屏幕显示触摸状态
 - [x] 触摸坐标校准（四角校准 + map 映射）
-- [x] Clear 按钮（触摸清屏）
+- [x] 中文字库（msyh 24px，28个汉字）
+- [x] 多页面系统（首页 → 页面1/页面2 → 功能页）
+- [x] 按钮导航（页面切换 + 返回）
+- [x] 代码模块化（config/touch/display/loop/main）
 
-### 9.2 下一步改进方向
+### 11.2 下一步改进方向
 
-1. **多页面菜单**：状态机 + 多页面切换
-2. **按钮按下反馈**：按下时变色，松开恢复
-3. **防抖处理**：加时间间隔，避免一次触摸触发多次
-4. **更多按钮**：颜色选择、画笔粗细、撤销等
+1. **按钮按下反馈**：按下时变色，松开恢复
+2. **防抖处理**：加时间间隔，避免一次触摸触发多次
+3. **过渡动画**：页面切换时的淡入淡出效果
+4. **更多页面内容**：每个子页面添加实际功能（传感器数据、设置等）
 5. **中断驱动触摸**：用 T_IRQ 引脚触发中断，避免轮询
-6. **双缓冲**：减少屏幕闪烁
+6. **手环 UI**：圆形/弧形界面适配小屏幕手环场景
 
-### 9.3 推荐学习资源
+### 11.3 推荐学习资源
 
 - [ILI9341 数据手册](https://www.displayfuture.com/Display/datasheet/controller/ILI9341.pdf) — 命令列表在 Section 8
 - [XPT2046 数据手册](https://www.waveshare.com/w/upload/8/82/Xpt2046.pdf) — SPI 协议在 Section 7
@@ -839,7 +1086,7 @@ build_flags =                            # 编译宏定义
 - [TFT_eSPI GitHub](https://github.com/Bodmer/TFT_eSPI) — 配置指南和示例
 - [PlatformIO 文档](https://docs.platformio.org/) — 构建系统配置
 
-### 9.4 关键概念速查
+### 11.4 关键概念速查
 
 | 概念 | 解释 |
 |:---|:---|
@@ -852,6 +1099,10 @@ build_flags =                            # 编译宏定义
 | Pull-up | 上拉电阻，把悬空引脚拉到 HIGH |
 | Strapping Pin | 启动模式引脚，上电时的状态决定芯片行为 |
 | USB CDC | USB Communications Device Class，USB 虚拟串口 |
+| PROGMEM | 把数据放在 Flash 而非 RAM 中，节省内存 |
 | map() | Arduino 线性映射函数，将一个范围的值映射到另一个范围 |
 | struct | C/C++ 结构体，将多个相关变量打包成一个类型 |
+| enum | 枚举类型，用有意义的名字代替魔法数字 |
+| extern | 声明变量/函数在其他文件中定义，链接时解析 |
 | const 引用 | `const T&` — 传引用不复制，且保证函数内不修改数据 |
+| UTF-8 | 可变长度字符编码，英文1字节，中文3字节 |

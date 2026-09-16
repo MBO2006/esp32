@@ -4,60 +4,118 @@
 #include "display.h"
 #include "config.h"
 #include "touch.h"
+#include "chinese_font.h"
 
 static TFT_eSPI tft = TFT_eSPI();
+static Page currentPage = PAGE_HOME;
 
 TFT_eSPI &getTft()
 {
     return tft;
 }
 
+Page getCurrentPage()
+{
+    return currentPage;
+}
+
 void displayInit()
 {
     tft.init();
-    tft.setRotation(0); // 竖屏 240×320
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextFont(1); // 8px 小字体
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Touch Demo", 5, 5);
 }
 
-void displayTouchInfo(uint16_t rawX, uint16_t rawY, uint16_t z, bool touched)
+void displayTouchInfo(bool touched)
 {
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("X:" + String(rawX) + "    ", 5, 20);
-    tft.drawString("Y:" + String(rawY) + "    ", 5, 32);
-    tft.drawString("Z:" + String(z) + "    ", 5, 44);
-
     if (touched)
     {
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.drawString("TOUCHED!", 5, 56);
+        tft.drawString("TOUCHED!", 140, 20);
     }
     else
     {
         tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.drawString("no touch ", 5, 56);
+        tft.drawString("no touch ", 140, 20);
     }
 }
 
-void displayClean()
+// ===== 页面绘制 =====
+
+void drawPageHome()
 {
     tft.fillScreen(TFT_BLACK);
-    tft.setTextFont(1); // 8px 小字体
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Touch Demo", 5, 5);
+    tft.setTextFont(2);
+    cnDrawString(&tft, 10, 10, "这是菜单");
+    cnDrawString(&tft, 10, 40, "你可以选择页面并点击");
+    drawButton(page1);
+    drawButton(page2);
 }
 
-/// @brief
-/// @param btn
+void drawPageFunction()
+{
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.drawString("FUNCTION PAGE", 10, 10);
+    cnDrawString(&tft, 10, 40, "佳佳快学习");
+    cnDrawString(&tft, 10, 80, "琼琼别学了");
+    drawButton(backBtn);
+}
+
+void drawpage1()
+{
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.drawString("PAGE1", 10, 10);
+    drawButton(backBtn);
+    drawButton(functionBtn);
+}
+
+void drawpage2()
+{
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.drawString("PAGE2", 10, 10);
+    drawButton(backBtn);
+}
+
+// ===== 页面切换（更新状态 + 重绘）=====
+
+void switchToHome()
+{
+    currentPage = PAGE_HOME;
+    drawPageHome();
+}
+
+void switchToFunction()
+{
+    currentPage = PAGE_FUNCTION;
+    drawPageFunction();
+}
+
+void gotopage1()
+{
+    currentPage = PAGE1;
+    drawpage1();
+}
+
+void gotopage2()
+{
+    currentPage = PAGE2;
+    drawpage2();
+}
+
+// ===== 按钮 =====
+
 void drawButton(const Button &btn)
 {
-    tft.drawRect(btn.x, btn.y, btn.w, btn.h, TFT_WHITE);
-    tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, TFT_BLUE);
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.drawRect(btn.x, btn.y, btn.w, btn.h, TFT_BLACK);
+    tft.fillRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, TFT_BLACK);
+    tft.setTextColor(TFT_BLACK, TFT_BLACK);
     tft.setTextFont(2);
-    tft.drawString(btn.label, btn.x + 10, btn.y + 8);
+    cnDrawString(&tft, btn.x + 10, btn.y + 8, btn.label);
 }
 
 bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn)

@@ -2,7 +2,6 @@
  * display.h — 显示辅助函数接口
  */
 #pragma once
-
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 
@@ -16,31 +15,47 @@ struct Button
 };
 
 /**
- * 获取全局 TFT 对象（供外部使用）
+ * 页面枚举
  */
+enum Page
+{
+    PAGE_HOME,
+    PAGE_FUNCTION,
+    PAGE1,
+    PAGE2,
+    PAGE_COUNT
+};
+
+// 按钮声明（定义在 main.cpp）
+extern Button home;
+extern Button page1;
+extern Button page2;
+extern Button backBtn;
+extern Button functionBtn;
+
+// 显示
 TFT_eSPI &getTft();
-
-/**
- * 初始化显示屏，在 setup() 中调用
- */
 void displayInit();
+void displayTouchInfo(bool touched);
 
-/**
- * 在屏幕上显示触摸原始值
- */
-void displayTouchInfo(uint16_t rawX, uint16_t rawY, uint16_t z, bool touched);
+// 页面绘制（每个函数负责清屏 + 画内容 + 画该页的按钮）
+void drawPageHome(); // home
 
-/**
- * 清屏并重绘标题
- */
-void displayClean();
+void drawpage1(); // page1
+void drawPageFunction();
 
-/**
- * 绘制按钮
- */
+void drawpage2(); // page2
+
+// 页面切换
+void switchToHome();
+void switchToFunction();
+
+void gotopage1();
+
+void gotopage2();
+
+Page getCurrentPage();
+
+// 按钮
 void drawButton(const Button &btn);
-
-/**
- * 判断触摸点是否在按钮内
- */
 bool isInButton(uint16_t rawX, uint16_t rawY, const Button &btn);

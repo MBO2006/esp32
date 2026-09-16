@@ -2,6 +2,27 @@
 
 所有重要变更都会记录在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.4.0] - 2025-09-13
+
+### 新增
+- 多页面系统：首页、页面1、页面2、功能页，支持页面间导航
+- 中文字库模块 `chinese_font.h`：基于微软雅黑 24px，包含28个常用汉字
+- 主循环独立模块 `loop.h/cpp`：从 main.cpp 中拆分，负责触摸检测与页面路由
+- 中文按钮标签（"页面1"、"页面2"、"返回"、"功能"）
+- 字体转换工具 `tools/font_converter.py` 和 `tools/font_converter_gui.py`
+- 页面枚举 `Page`（PAGE_HOME / PAGE_FUNCTION / PAGE1 / PAGE2）
+- `drawPageHome()`、`drawPageFunction()`、`drawpage1()`、`drawpage2()` 页面绘制函数
+- `switchToHome()`、`switchToFunction()`、`gotopage1()`、`gotopage2()` 页面切换函数
+
+### 变更
+- `main.cpp` 精简为纯初始化：setup() → displayInit → drawPageHome → touchInit → loop()
+- `displayTouchInfo()` 参数从4个简化为1个（仅 `bool touched`）
+- 按钮定义从 main.cpp 迁移到 loop.cpp
+- `CODE_ANALYSIS.md` 全面更新，新增中文字库、loop 模块、页面系统等章节
+- `README.md` 目录结构更新
+
+---
+
 ## [v0.3.0] - 2025-09-13
 
 ### 新增
