@@ -24,8 +24,11 @@ void setup()
     drawPageHome(); // 画首页（含按钮）
 
     touchInit(); // 初始化触摸
-    loop();      // 进入循环（检测触摸并处理）
 
     Serial.println("READY");
     Serial.flush();
+
+    pinMode(LED_PIN, OUTPUT);
+
+    loop(); // 进入循环（检测触摸并处理）
 }

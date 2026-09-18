@@ -6,22 +6,27 @@
 
 ```
 esp32/
-├── platformio.ini           # PlatformIO 项目配置
-├── CODE_ANALYSIS.md         # 代码深度解析文档
-├── CHANGELOG.md             # 版本变更记录
-├── tools/                   # 开发工具
-│   ├── font_converter.py    # 字体转换脚本（命令行版）
-│   └── font_converter_gui.py# 字体转换 GUI 工具
-├── src/                     # 触摸屏主程序（基于 TFT_eSPI + XPT2046）
-│   ├── main.cpp             # 应用入口（setup 初始化）
-│   ├── config.h             # 引脚与配置定义
-│   ├── display.cpp / .h     # 显示驱动封装（页面绘制、按钮）
-│   ├── touch.cpp / .h       # 触摸驱动封装（bit-bang SPI）
-│   ├── loop.cpp / .h        # 主循环（触摸检测、页面路由）
-│   └── chinese_font.h       # 中文字库（自动生成）
+├── platformio.ini              # PlatformIO 项目配置
+├── CODE_ANALYSIS.md            # 代码深度解析文档
+├── CHANGELOG.md                # 版本变更记录
+├── tools/                      # 开发工具
+│   ├── font_converter.py       # 字体转换脚本（命令行版）
+│   ├── font_converter_gui.py   # 字体转换 GUI 工具
+│   ├── jpeg_converter.py       # JPEG 图片转换脚本（命令行版）
+│   └── jpeg_converter_gui.py   # JPEG 图片转换 GUI 工具
+├── src/                        # 触摸屏主程序（基于 TFT_eSPI + XPT2046）
+│   ├── main.cpp                # 应用入口（setup 初始化）
+│   ├── config.h                # 引脚与配置定义
+│   ├── display.cpp / .h        # 显示模块（页面绘制、按钮、JPEG）
+│   ├── touch.cpp / .h          # 触摸驱动封装（bit-bang SPI）
+│   ├── loop.cpp / .h           # 主循环（触摸检测、页面路由）
+│   ├── Time.cpp / .h           # 计时器模块（秒表功能）
+│   ├── led.cpp / .h            # LED 控制模块
+│   ├── chinese_font.h          # 中文字库（自动生成）
+│   └── img_photo.h             # JPEG 图片数据（自动生成）
 ├── libraries/
-│   └── TFT_ESP32/           # 手写的 ILI9341 驱动库（学习用）
-└── sketch_sep13a/           # Arduino 示例草图
+│   └── TFT_ESP32/              # 手写的 ILI9341 驱动库（学习用）
+└── sketch_sep13a/              # Arduino 示例草图
 ```
 
 ## 硬件接线

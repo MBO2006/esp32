@@ -2,6 +2,34 @@
 
 所有重要变更都会记录在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.5.0] - 2025-09-13
+
+### 新增
+- **计时器模块** `Time.h/cpp`：秒表功能，支持开始/暂停/重置，大号字体显示时间
+- **LED 控制模块** `led.h/cpp`：通过 `ledon()`/`ledoff()` 控制 GPIO 2 的 LED
+- **JPEG 图片显示**：`drawJpeg()` 函数，基于 JPEGDecoder 库逐块解码渲染
+- **图片转换工具** `tools/jpeg_converter.py` 和 `tools/jpeg_converter_gui.py`：支持 JPEG/PNG/BMP 转换，GUI 版带缩放、质量控制、预览功能
+- 新页面 `PAGE_DIANDENG`（LED 控制页）：含"开灯"、"关灯"按钮
+- 页面1 新增"计时器"和"灯"入口按钮
+- `config.h` 新增 `LED_PIN 2` 定义
+- `platformio.ini` 新增 `bodmer/JPEGDecoder` 依赖
+- `CODE_ANALYSIS.md` 全面更新，新增计时器、LED、JPEG、开发工具等章节
+
+### 变更
+- 按钮绘制改为纯文字模式（无边框无填充，触摸区域仍有效）
+- 触摸校准 Y 轴范围从 `map(rawY, 200, 1830, 0, 319)` 改为 `map(rawY, 0, 1765, 0, 319)`，修正上方按钮偏移问题
+- `drawButton()` 文字垂直位置从 `btn.y + 8` 改为 `btn.y + 5`（居中）
+- 中文字库从 28 字扩展到 66 字
+
+### 修复
+- 修复 `displayTouchInfo()` 函数意外删除导致链接错误
+- 修复 `loop.h` 中变量定义导致的 `multiple definition` 错误（改为 extern 声明）
+- 修复 `drawString` 参数过多（`100, 40`）导致编译错误
+- 修复 `void AddTime()` 声明误当调用的问题
+- 修复 `pinMode(LED, HIGH)` 不亮 LED 的问题（HIGH=1=INPUT，应为 OUTPUT）
+
+---
+
 ## [v0.4.0] - 2025-09-13
 
 ### 新增

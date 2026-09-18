@@ -21,3 +21,4 @@
 
 // ===== 串口 =====
 #define SERIAL_BAUD 115200
+#define LED_PIN 2
