@@ -1,39 +1,31 @@
-# ESP32 TFT ILI9341 驱动库
+# ESP32-S3 智能手表 — LVGL + ILI9341 + XPT2046
 
-基于 Arduino 框架，从零手写的 ILI9341 TFT 显示屏驱动库，用于学习 SPI 协议与嵌入式驱动开发。同时包含 ESP32-S3 + ILI9341 + XPT2046 触摸屏的完整 PlatformIO 项目。
+基于 ESP32-S3 + ILI9341 TFT (240×320) + XPT2046 触摸屏的 LVGL v9 智能手表项目。
 
 ## 目录结构
 
 ```
 esp32/
-├── platformio.ini              # PlatformIO 项目配置
-├── CODE_ANALYSIS.md            # 代码深度解析文档
-├── CHANGELOG.md                # 版本变更记录
-├── tools/                      # 开发工具
-│   ├── font_converter.py       # 字体转换脚本（命令行版）
-│   ├── font_converter_gui.py   # 字体转换 GUI 工具
-│   ├── jpeg_converter.py       # JPEG 图片转换脚本（命令行版）
-│   └── jpeg_converter_gui.py   # JPEG 图片转换 GUI 工具
-├── src/                        # 触摸屏主程序（基于 TFT_eSPI + XPT2046）
-│   ├── main.cpp                # 应用入口（setup 初始化）
-│   ├── config.h                # 引脚与配置定义
-│   ├── display.cpp / .h        # 显示模块（页面绘制、按钮、JPEG）
-│   ├── touch.cpp / .h          # 触摸驱动封装（bit-bang SPI）
-│   ├── loop.cpp / .h           # 主循环（触摸检测、页面路由）
-│   ├── Time.cpp / .h           # 计时器模块（秒表功能）
-│   ├── led.cpp / .h            # LED 控制模块
-│   ├── chinese_font.h          # 中文字库（自动生成）
-│   └── img_photo.h             # JPEG 图片数据（自动生成）
-├── libraries/
-│   └── TFT_ESP32/              # 手写的 ILI9341 驱动库（学习用）
-└── sketch_sep13a/              # Arduino 示例草图
+├── platformio.ini              # PlatformIO 配置（库依赖、编译选项）
+├── lv_conf.h                   # LVGL 配置文件（色深、字体、控件）
+├── src/
+│   ├── main.cpp                # 应用入口
+│   ├── config.h                # 引脚定义
+│   ├── lvgl_setup.cpp / .h     # LVGL 显示/触摸驱动
+│   ├── display.cpp / .h        # TFT_eSPI 底层驱动
+│   ├── touch.cpp / .h          # XPT2046 触摸驱动（bit-bang SPI）
+│   ├── Timer.cpp / .h          # 计时器逻辑
+│   ├── loop.cpp / .h           # LVGL 回调注册 + 定时器更新
+│   ├── led.cpp / .h            # LED 控制
+│   ├── openmv.cpp / .h         # OpenMV 摄像头（SPI 通信）
+│   └── screens/
+│       ├── ui_screens.cpp / .h # 所有界面（表盘/计时器/LED）
+│       └── ...
+├── picture/                    # 开发过程截图
+└── tools/                      # 开发工具
 ```
 
 ## 硬件接线
-
-### PlatformIO 触摸屏项目（ESP32-S3）
-
-显示和触摸使用**独立 SPI 引脚**，避免总线冲突。
 
 | 功能 | ESP32-S3 GPIO | ILI9341 引脚 |
 |:---|:---:|:---:|
@@ -48,169 +40,175 @@ esp32/
 | 触摸 CLK | 14 | T_CLK |
 | 触摸 CS | 7 | T_CS |
 | 触摸 IRQ | 17 | T_IRQ |
-| 电源 | 3.3V | VCC, LED |
-| 地 | GND | GND |
-
-### 手写驱动库接线（ESP32）
-
-| ILI9341 引脚 | ESP32 引脚 | 说明 |
-|:---:|:---:|:---|
-| VCC | 3.3V | 电源 |
-| GND | GND | 地 |
-| SCK | GPIO 18 | SPI 时钟 |
-| MOSI | GPIO 23 | 主机数据输出 |
-| CS | GPIO 5 | 片选 |
-| DC | GPIO 2 | 数据/命令选择 |
-| RST | GPIO 4 | 复位 |
-| BLK | GPIO 15 | 背光控制 |
-
-> **注意**：具体引脚可在源码的宏定义中修改。
 
 ---
 
-## 环境搭建
+## 踩坑记录与解决方案
 
-### 方式一：PlatformIO（推荐）
+### 坑1：`time.h` 头文件冲突 — "template with C linkage"
 
-1. 安装 [VSCode](https://code.visualstudio.com/)
-2. 在 VSCode 扩展商店搜索 **PlatformIO IDE**，安装
-3. 用 VSCode 打开本项目文件夹，PlatformIO 会自动识别 `platformio.ini` 并安装依赖
+**现象：**
+编译时报大量 `template with C linkage` 错误，涉及 `<functional>`、`<stat.h>` 等系统头文件。
 
-依赖库（自动安装，无需手动操作）：
+**原因：**
+`platformio.ini` 的 `build_flags` 中加了 `-Isrc`，把项目 `src/` 目录加入了**全局**编译路径。Windows 文件系统不区分大小写，当系统头文件 `sys/stat.h` 里 `#include <time.h>` 时，编译器在 `src/` 中找到了我们的 `Timer.h`，误当作系统 `<time.h>` 引入。系统头文件被包裹在 `extern "C"` 块中，而我们的头文件引用了 C++ 的 `Arduino.h`，导致 C++ 模板出现在 C 链接块里。
+
+**解决：**
+从 `build_flags` 中删除 `-Isrc`。PlatformIO 的 Arduino 框架会自动把 `src/` 加到 include 路径，不需要手动指定。
+
+```diff
+ build_flags =
+-    -Isrc
+     -Isrc/screens
+```
+
+**教训：** 永远不要用 `-I` 把项目源码目录加到全局编译路径，会污染系统头文件搜索。用 `include/` 目录或让框架自动处理。
+
+---
+
+### 坑2：`lv_conf.h` 找不到 — "Possible failure to include lv_conf.h"
+
+**现象：**
+LVGL 编译时报 `#pragma message: Possible failure to include lv_conf.h`。
+
+**原因：**
+LVGL 在多个相对路径搜索 `lv_conf.h`，但 `-Isrc` 已被删除，编译器找不到它。
+
+**解决：**
+1. 把 `lv_conf.h` 放到**项目根目录**（与 `platformio.ini` 同级）
+2. 用 `LV_CONF_PATH` 指定路径（**必须带引号**）：
+
+```diff
+-    -D LV_CONF_INCLUDE_SIMPLE
++    -D LV_CONF_PATH=\"lv_conf.h\"
+```
+
+**教训：** LVGL 的 `LV_CONF_PATH` 宏需要转义引号 `\"...\"`，否则 `#include` 指令报语法错误。
+
+---
+
+### 坑3：OpenMV 与 TFT_eSPI 的 SPI 总线冲突
+
+**现象：**
+烧录后串口无输出，屏幕无显示。
+
+**原因：**
+TFT_eSPI 使用 HSPI (SPI2) 驱动屏幕，OpenMV 的 `openmvInit()` 也初始化了 HSPI（用不同引脚），重写了 SPI2 的配置，导致 TFT_eSPI 的 SPI 通信完全失效。
+
+**解决：**
+暂时注释掉 `openmvInit()`，后续需要将 OpenMV 迁移到 SPI3 并分配独立引脚。
+
+**教训：** ESP32-S3 上 HSPI = SPI2，多个模块共用同一个 SPI 外设会互相覆盖配置。要用独立 SPI 外设（SPI2 / SPI3）或用 GPIO 模拟。
+
+---
+
+### 坑4：PSRAM 不可用 — 缓冲区分配失败
+
+**现象：**
+串口显示 `[FATAL] No memory for display buffer!`。
+
+**原因：**
+PlatformIO 的板子定义 `esp32-s3-devkitc-1` 对应的是 **N8**（8MB Flash，**无 PSRAM**），不是 N16R8。150KB 的全帧缓冲区（240×320×2字节）分配两个需要300KB，内部 SRAM 放不下两个。
+
+**解决：**
+改用**单缓冲 + PARTIAL 渲染模式**，只分配 40 行的缓冲区（约 19KB）：
+
+```c
+size_t buf_bytes = 240 * 40 * sizeof(lv_color_t);  // ~19KB
+draw_buf = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL);
+lv_display_set_buffers(disp, draw_buf, NULL, buf_bytes,
+                       LV_DISPLAY_RENDER_MODE_PARTIAL);
+```
+
+**教训：** 没有 PSRAM 的 ESP32-S3 内部 SRAM 只有约200KB 可用。LVGL 单缓冲 PARTIAL 模式是最省内存的方案。
+
+---
+
+### 坑5：LVGL `.c` 文件包含 C++ 头文件
+
+**现象：**
+编译 `lvgl_setup.c` 报错：`class Print;` — C 语言不认识 `class`。
+
+**原因：**
+`lvgl_setup.c` 文件扩展名是 `.c`（C 编译器），但 `#include <TFT_eSPI.h>` 是 C++ 头文件。
+
+**解决：**
+把文件重命名为 `lvgl_setup.cpp`，让编译器用 C++ 模式编译。
+
+**教训：** 只要 `#include` 了任何 Arduino / TFT_eSPI / LVGL 的 C++ 头文件，文件扩展名必须是 `.cpp`。
+
+---
+
+### 坑6：屏幕显示红色变蓝色 — RGB 颜色通道反转
+
+**现象：**
+LVGL 能显示了，但 `lv_color_hex(0xFF0000)`（红色）显示为蓝色。
+
+**原因：**
+ILI9341 面板有两种：RGB 排列和 BGR 排列。我们的面板是 BGR 排列，LVGL 输出的 RGB565 数据高低字节顺序与面板不匹配。
+
+**解决：**
+在 flush 回调中手动交换每个像素的高低字节：
+
+```c
+uint16_t *p = (uint16_t *)px_map;
+uint32_t total = w * h;
+for (uint32_t i = 0; i < total; i++) {
+    p[i] = (p[i] >> 8) | (p[i] << 8);
+}
+```
+
+**教训：** LVGL 的 `LV_COLOR_16_SWAP` 和 `LV_COLOR_FORMAT_RGB565_SWAP` 在某些版本/配置下可能不起作用。手动字节交换是最可靠的方案。
+
+---
+
+### 坑7：`millis()` 函数指针类型不匹配
+
+**现象：**
+`lv_tick_set_cb(millis)` 报错：`invalid conversion from 'unsigned long (*)()' to 'uint32_t (*)()'`
+
+**原因：**
+Arduino 的 `millis()` 返回 `unsigned long`（ESP32 上是32位），但 LVGL 要求返回 `uint32_t`。虽然实际大小相同，但 C++ 类型系统不允许隐式转换。
+
+**解决：**
+写一个包装函数：
+
+```c
+static uint32_t my_millis(void) { return (uint32_t)millis(); }
+lv_tick_set_cb(my_millis);
+```
+
+---
+
+## LVGL 集成架构
+
+```
+setup():
+  displayInit()          → TFT_eSPI SPI 初始化
+  touchInit()            → XPT2046 bit-bang SPI 初始化
+  lvgl_setup_init()      → LVGL 内核 + 显示驱动 + 触摸驱动
+  screens_init()         → 创建表盘/计时器/LED 三个界面
+  app_init_callbacks()   → 注册 LED/计时器事件回调
+
+loop():
+  lvgl_setup_loop()      → lv_timer_handler() 驱动渲染
+```
+
+---
+
+## 快速开始
+
+1. 安装 [PlatformIO](https://platformio.org/)
+2. 打开本项目文件夹
+3. 修改 `platformio.ini` 中的引脚配置（如需要）
+4. 编译：`pio run`
+5. 烧录：`pio run --target upload`
+6. 串口监控：`pio device monitor`
+
+依赖库（PlatformIO 自动安装）：
 - [TFT_eSPI](https://github.com/Bodmer/TFT_eSPI) ^2.5.43
+- [LVGL](https://github.com/lvgl/lvgl) ^9.2.0
 - [XPT2046_Touchscreen](https://github.com/PaulStoffregen/XPT2046_Touchscreen)
-
-### 方式二：Arduino IDE
-
-1. 下载安装 [Arduino IDE 2.x](https://www.arduino.cc/en/software)
-2. 文件 → 首选项 → 附加开发板管理器网址，填入：
-   ```
-   https://espressif.github.io/arduino-esp32/package_esp32_index.json
-   ```
-3. 工具 → 开发板 → 开发板管理器 → 搜索 `esp32` → 安装 Espressif 的包
-4. 工具 → 开发板 → 选择 `ESP32S3 Dev Module`
-
----
-
-## 烧录教程
-
-### PlatformIO 方式（推荐）
-
-#### 方法一：VSCode 图形界面
-
-1. 用 VSCode 打开本项目文件夹（文件 → 打开文件夹 → 选择 `esp32` 目录）
-2. 首次打开时，PlatformIO 会自动在底部终端安装依赖库，等待进度条完成（约 1-3 分钟）
-3. 用 USB 数据线连接 ESP32-S3 开发板，确认系统识别到串口：
-   - Windows：设备管理器中出现 `COMx` 端口
-   - macOS/Linux：出现 `/dev/ttyUSB0` 或 `/dev/ttyACM0`
-4. 点击左侧活动栏的 **PlatformIO 图标**（橙色蚂蚁头 logo）
-5. 展开左侧 `PROJECT TASKS` → `esp32s3`，会看到以下操作：
-
-   | 操作 | 说明 |
-   |:---|:---|
-   | **Build** | 编译项目，检查代码是否有语法错误，成功后显示 `SUCCESS` |
-   | **Upload** | 编译并烧录到开发板，进度到 100% 后自动重启 |
-   | **Monitor** | 打开串口监视器，查看 ESP32 输出的调试信息（波特率 115200） |
-   | **Upload and Monitor** | 一键烧录 + 打开串口监控，最常用 |
-
-6. 点击 **Upload and Monitor** 即可完成编译、烧录、监控的完整流程
-
-#### 方法二：命令行
-
-```bash
-# 编译
-pio run
-
-# 烧录（ESP32-S3 通过 USB 直连）
-pio run --target upload
-
-# 查看串口监控（波特率 115200）
-pio device monitor
-
-# 一条命令：编译 + 烧录 + 打开串口监控
-pio run --target upload && pio device monitor
-```
-
-#### 烧录失败排查
-
-| 问题 | 解决方法 |
-|:---|:---|
-| 找不到串口 | 安装 [CP2102](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) 或 [CH340](http://www.wch-ic.com/downloads/CH341SER_EXE.html) 驱动 |
-| ESP32-S3 无法进入下载模式 | 按住 **BOOT** 键，再按一下 **RST** 键，松开 BOOT |
-| 权限不足 (Linux) | `sudo usermod -aG dialout $USER`，重新登录 |
-| 端口被占用 | 关闭串口监视器或其他占用端口的程序 |
-
-### Arduino IDE 方式
-
-1. 工具 → 开发板 → 选择 `ESP32S3 Dev Module`
-2. 工具 → 端口 → 选择对应的 COM 口
-3. 点击 **上传** 按钮（→ 图标）
-4. 上传完成后打开串口监视器，波特率设为 **115200**
-
-### 手动进入烧录模式
-
-如果自动烧录失败，手动进入下载模式：
-
-1. **按住** BOOT 按钮（不要松手）
-2. **按一下** RST 按钮后松开
-3. **松开** BOOT 按钮
-4. 此时 ESP32 进入下载模式，执行烧录命令
-5. 烧录完成后按 RST 重启
-
----
-
-## 手写驱动库架构
-
-`libraries/TFT_ESP32/` 是从零手写的 ILI9341 驱动，用于学习：
-
-```
-┌─────────────────────────────────┐
-│         应用层 (tft_demo.ino)    │  调用绘图 API
-├─────────────────────────────────┤
-│  第4层  tft_text.c              │  文字渲染、字模显示
-├─────────────────────────────────┤
-│  第3层  tft_draw.c              │  像素、线、矩形、圆形、填充
-├─────────────────────────────────┤
-│  第2层  tft_cmd.c               │  ILI9341 寄存器配置、初始化序列
-├─────────────────────────────────┤
-│  第1层  tft_spi.c               │  SPI 总线初始化、数据传输
-└─────────────────────────────────┘
-```
-
-| 层级 | 学习重点 |
-|:---|:---|
-| 第1层 SPI | Arduino SPI 库、`SPI.begin()` / `SPI.transfer()` |
-| 第2层 CMD | ILI9341 寄存器配置、初始化时序、数据手册阅读 |
-| 第3层 Draw | 像素寻址、RGB565 颜色格式、Bresenham 画线算法 |
-| 第4层 Text | 字模原理、位图渲染、字体数据结构 |
-
-## 学习路线
-
-1. **跑通 SPI** → 用逻辑分析仪看波形，确认时序正确
-2. **发初始化命令** → 屏幕亮起来 = 第一个里程碑
-3. **画单个像素** → 理解 `set_window + memory_write` 核心机制
-4. **写 `fill_rect`** → 性能关键函数，大量操作基于它
-5. **画线（Bresenham 算法）** → 经典图形学算法
-6. **添加字模** → C 数组存储字体位图，渲染文字
-7. **优化性能** → 使用 ESP32 特有 API 加速传输
-
-## 参考资料
-
-- [ILI9341 数据手册](https://www.displayfuture.com/Display/datasheet/controller/ILI9341.pdf) — 命令表在 Section 8
-- [ESP32 Arduino SPI 文档](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/spi.html)
-- [TFT_eSPI 库文档](https://github.com/Bodmer/TFT_eSPI)
-- [PlatformIO ESP32 文档](https://docs.platformio.org/en/latest/boards/espressif32/)
-
-## 常用 Git 命令
-
-```bash
-git add .                    # 暂存所有修改
-git commit -m "描述"          # 提交
-git push origin main         # 推送到 GitHub
-git pull origin main         # 拉取最新代码
-git status                   # 查看状态
-git log --oneline            # 查看提交历史
-```
 
 ## 联系
 
